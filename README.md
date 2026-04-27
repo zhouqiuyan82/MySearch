@@ -2,6 +2,11 @@
 
 基于 MongoDB 的 Node 搜索接口。服务启动后会先从 MongoDB 拉全量数据到内存，构建倒排索引，搜索请求直接查内存索引；MongoDB 作为唯一真实数据源。
 
+当前版本会同时读取两个集合并合并进同一份搜索索引：
+
+- `characters`：英文原始角色数据，服务会自动补 `locale = en`
+- `characterlocalizations`：其他语言的本地化数据
+
 ## 运行前准备
 
 先安装依赖：
@@ -16,7 +21,8 @@ npm install
 ```bash
 export MONGODB_URI="mongodb://127.0.0.1:27017"
 export MONGODB_DB="aichat"
-export MONGODB_COLLECTION="characterlocalizations"
+export MONGODB_COLLECTION_CHARACTERS="characters"
+export MONGODB_COLLECTION_LOCALIZATIONS="characterlocalizations"
 export REFRESH_INTERVAL_MS=3600000
 ```
 
@@ -37,7 +43,7 @@ npm start
 
 ## 数据更新策略
 
-- 启动时：从 MongoDB 全量拉取数据并重建索引。
+- 启动时：从 MongoDB 的 `characters` 和 `characterlocalizations` 两个集合全量拉取数据并重建索引。
 - 运行中：按 `REFRESH_INTERVAL_MS` 定时重新拉取并重建索引。
 - 手动刷新：调用 `POST /reload` 或 `GET /reload`。
 - 刷新失败：保留上一版内存索引继续提供搜索，不会直接把服务打挂。
@@ -73,7 +79,7 @@ curl -X POST "http://127.0.0.1:3000/reload"
 
 ## 健康检查返回重点
 
-- `size`：当前内存索引中的文档数
+- `size`：当前内存索引中的文档数（英文和多语言记录合并后的总数）
 - `lastLoadedAt`：最近一次成功加载 MongoDB 的时间
 - `lastRefreshError`：最近一次刷新失败原因
 - `reloading`：当前是否正在后台刷新

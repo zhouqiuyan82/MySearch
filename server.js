@@ -13,7 +13,11 @@ const REFRESH_INTERVAL_MS = Math.max(
 const store = new MongoLocalizationStore({
   uri: process.env.MONGODB_URI,
   dbName: process.env.MONGODB_DB,
-  collectionName: process.env.MONGODB_COLLECTION || 'characterlocalizations',
+  charactersCollectionName: process.env.MONGODB_COLLECTION_CHARACTERS || 'characters',
+  localizationsCollectionName:
+    process.env.MONGODB_COLLECTION_LOCALIZATIONS
+    || process.env.MONGODB_COLLECTION
+    || 'characterlocalizations',
 });
 
 const state = {
@@ -63,7 +67,7 @@ async function reloadIndex(reason = 'manual') {
   state.lastRefreshError = null;
 
   state.reloadInFlight = (async () => {
-    const rows = await store.fetchAllLocalizations();
+    const rows = await store.fetchAllSearchDocuments();
     const nextEngine = new LocalizationSearchEngine(rows);
     state.engine = nextEngine;
     state.lastLoadedAt = new Date().toISOString();
@@ -201,7 +205,13 @@ const server = http.createServer(async (req, res) => {
       size: state.engine.size,
       dataSource: 'mongodb',
       mongoDb: process.env.MONGODB_DB || null,
-      mongoCollection: process.env.MONGODB_COLLECTION || 'characterlocalizations',
+      mongoCollections: {
+        characters: process.env.MONGODB_COLLECTION_CHARACTERS || 'characters',
+        localizations:
+          process.env.MONGODB_COLLECTION_LOCALIZATIONS
+          || process.env.MONGODB_COLLECTION
+          || 'characterlocalizations',
+      },
       refreshIntervalMs: REFRESH_INTERVAL_MS,
       lastLoadedAt: state.lastLoadedAt,
       lastRefreshStartedAt: state.lastRefreshStartedAt,
@@ -244,7 +254,7 @@ async function start() {
     console.log(`[search-api] Listening on http://${HOST}:${PORT}`);
     // eslint-disable-next-line no-console
     console.log(
-      `[search-api] Loaded ${state.engine.size} records from MongoDB ${process.env.MONGODB_DB}.${process.env.MONGODB_COLLECTION || 'characterlocalizations'}`,
+      `[search-api] Loaded ${state.engine.size} records from MongoDB ${process.env.MONGODB_DB}.${process.env.MONGODB_COLLECTION_CHARACTERS || 'characters'} + ${process.env.MONGODB_DB}.${process.env.MONGODB_COLLECTION_LOCALIZATIONS || process.env.MONGODB_COLLECTION || 'characterlocalizations'}`,
     );
   });
 }
