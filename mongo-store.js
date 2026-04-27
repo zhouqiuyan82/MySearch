@@ -9,7 +9,6 @@ const SEARCH_PROJECTION = {
   bio: 1,
   greeting: 1,
   description: 1,
-  updatedAt: 1,
 };
 
 class MongoLocalizationStore {
@@ -46,10 +45,7 @@ class MongoLocalizationStore {
 
   async fetchAllLocalizations() {
     const collection = await this.connect();
-    return collection
-      .find({}, { projection: SEARCH_PROJECTION })
-      .sort({ updatedAt: -1, _id: 1 })
-      .toArray();
+    return collection.find({}, { projection: SEARCH_PROJECTION }).toArray();
   }
 
   async close() {

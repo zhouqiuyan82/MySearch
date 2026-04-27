@@ -8,8 +8,9 @@ const FIELD_WEIGHTS = {
   locale: 1,
 };
 
-const SEARCH_FIELDS = Object.keys(FIELD_WEIGHTS);
 const CJK_REGEX = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+const TOKEN_CHUNK_REGEX = /\p{L}+|\p{N}+/gu;
+const EMPTY_TOKEN_SET = new Set();
 
 function normalizeText(value) {
   return String(value || '')
@@ -24,11 +25,10 @@ function isCjk(text) {
   return CJK_REGEX.test(text);
 }
 
-function tokenize(text) {
-  const normalized = normalizeText(text);
+function tokenizeNormalized(normalized) {
   if (!normalized) return [];
 
-  const chunks = normalized.match(/\p{L}+|\p{N}+/gu) || [];
+  const chunks = normalized.match(TOKEN_CHUNK_REGEX) || [];
   const tokens = [];
 
   for (const chunk of chunks) {
@@ -54,6 +54,10 @@ function tokenize(text) {
   return tokens;
 }
 
+function tokenize(text) {
+  return tokenizeNormalized(normalizeText(text));
+}
+
 function tokenBoost(token) {
   if (isCjk(token)) {
     return token.length === 1 ? 0.7 : 1.1;
@@ -69,66 +73,79 @@ function shortText(value, size = 140) {
   return `${text.slice(0, size)}...`;
 }
 
-class LocalizationSearchEngine {
-  constructor(rows) {
-    this.rawRows = Array.isArray(rows) ? rows : [];
-    this.docs = [];
-    this.invertedIndex = new Map();
-    this._buildIndex();
+function indexField(postings, docId, field, text, fullTextParts) {
+  const normalized = normalizeText(text);
+  if (normalized) {
+    fullTextParts.push(normalized);
   }
 
-  _buildIndex() {
-    const postings = new Map();
+  const uniqueTokens = new Set(tokenizeNormalized(normalized));
+  for (const token of uniqueTokens) {
+    if (!postings.has(token)) postings.set(token, []);
+    postings.get(token).push({
+      id: docId,
+      field,
+      weight: FIELD_WEIGHTS[field],
+    });
+  }
 
-    this.docs = this.rawRows.map((item, id) => {
+  return {
+    normalized,
+    uniqueTokens,
+  };
+}
+
+class LocalizationSearchEngine {
+  constructor(rows) {
+    this.docs = [];
+    this.invertedIndex = new Map();
+    this._buildIndex(Array.isArray(rows) ? rows : []);
+  }
+
+  _buildIndex(rows) {
+    const postings = new Map();
+    const docs = new Array(rows.length);
+
+    for (let id = 0; id < rows.length; id += 1) {
+      const item = rows[id];
+      const personality = Array.isArray(item.personality) ? item.personality : [];
       const doc = {
         id,
         uuid: item.uuid,
         locale: item.locale,
         name: item.name || '',
         original_name: item.original_name || '',
-        personality: Array.isArray(item.personality) ? item.personality : [],
+        personality,
         bio: item.bio || '',
         greeting: item.greeting || '',
         description: item.description || '',
       };
 
-      const fieldTexts = {
-        name: doc.name,
-        original_name: doc.original_name,
-        personality: doc.personality.join(' '),
-        bio: doc.bio,
-        greeting: doc.greeting,
-        description: doc.description,
-        locale: doc.locale || '',
-      };
+      const fullTextParts = [];
+      const nameField = indexField(postings, id, 'name', doc.name, fullTextParts);
+      const originalNameField = indexField(
+        postings,
+        id,
+        'original_name',
+        doc.original_name,
+        fullTextParts,
+      );
+      indexField(postings, id, 'personality', personality.join(' '), fullTextParts);
+      indexField(postings, id, 'bio', doc.bio, fullTextParts);
+      indexField(postings, id, 'greeting', doc.greeting, fullTextParts);
+      indexField(postings, id, 'description', doc.description, fullTextParts);
+      const localeField = indexField(postings, id, 'locale', doc.locale || '', fullTextParts);
 
-      doc.normalized = {};
-      doc.tokens = {};
-      doc.fullText = '';
+      doc.nameNormalized = nameField.normalized;
+      doc.originalNameNormalized = originalNameField.normalized;
+      doc.localeNormalized = localeField.normalized;
+      doc.nameTokens = nameField.uniqueTokens;
+      doc.fullText = fullTextParts.join(' ');
 
-      for (const field of SEARCH_FIELDS) {
-        const text = fieldTexts[field] || '';
-        const normalized = normalizeText(text);
-        doc.normalized[field] = normalized;
-        doc.fullText += ` ${normalized}`;
+      docs[id] = doc;
+    }
 
-        const uniqueTokens = new Set(tokenize(normalized));
-        doc.tokens[field] = uniqueTokens;
-        for (const token of uniqueTokens) {
-          if (!postings.has(token)) postings.set(token, []);
-          postings.get(token).push({
-            id,
-            field,
-            weight: FIELD_WEIGHTS[field],
-          });
-        }
-      }
-
-      doc.fullText = doc.fullText.trim();
-      return doc;
-    });
-
+    this.docs = docs;
     this.invertedIndex = postings;
   }
 
@@ -139,7 +156,7 @@ class LocalizationSearchEngine {
     const localeFilter = normalizeText(options.locale || '');
     const limit = Math.max(1, Math.min(Number(options.limit) || 20, 100));
 
-    const queryTokens = Array.from(new Set(tokenize(q)));
+    const queryTokens = Array.from(new Set(tokenizeNormalized(q)));
     const scores = new Map();
     const matchedTokenCounts = new Map();
     const matchedFields = new Map();
@@ -151,7 +168,7 @@ class LocalizationSearchEngine {
       for (const posting of postingList) {
         const doc = this.docs[posting.id];
         if (!doc) continue;
-        if (localeFilter && normalizeText(doc.locale) !== localeFilter) continue;
+        if (localeFilter && doc.localeNormalized !== localeFilter) continue;
 
         const score = scores.get(posting.id) || 0;
         scores.set(posting.id, score + posting.weight * tokenBoost(token));
@@ -173,9 +190,9 @@ class LocalizationSearchEngine {
       const coverage = (matchedTokenCounts.get(docId) || 0) / (queryTokens.length || 1);
       score *= 0.6 + coverage;
 
-      const nameNorm = doc.normalized.name || '';
-      const originalNameNorm = doc.normalized.original_name || '';
-      const nameTokens = doc.tokens.name || new Set();
+      const nameNorm = doc.nameNormalized || '';
+      const originalNameNorm = doc.originalNameNormalized || '';
+      const nameTokens = doc.nameTokens || EMPTY_TOKEN_SET;
 
       const isExactName = nameNorm === q;
       const isNamePrefix = !isExactName && nameNorm.startsWith(q);
